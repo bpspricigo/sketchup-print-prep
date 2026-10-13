@@ -1,0 +1,296 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Print Prep</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1f2328; --muted: #6b7078;
+    --line: #e2e0db; --accent: #2f6fde; --ok: #1f8a4c; --warn: #b7791f; --bad: #c2362f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 14px; background: var(--bg); color: var(--ink);
+         font: 13px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+       margin: 0 0 8px; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+          padding: 12px; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  label { color: var(--muted); }
+  input[type=number] { width: 70px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  select { padding: 4px; border: 1px solid var(--line); border-radius: 4px; font: inherit; max-width: 100%; }
+  button { font: inherit; padding: 6px 12px; border-radius: 5px; border: 1px solid var(--line);
+           background: var(--card); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.small { padding: 2px 8px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stat { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  .stat b { display: block; font-size: 18px; }
+  .stat span { color: var(--muted); font-size: 11px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 11px; }
+  tr.current td { background: #eef3fd; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px; margin: 1px 2px 1px 0; }
+  .badge.bad { background: #fbe9e8; } .badge.warn { background: #fdf3e1; } .badge.ok { background: #e6f4ec; }
+  .path { color: var(--muted); font-size: 11px; word-break: break-word; }
+  .note { color: var(--muted); font-size: 12px; }
+  #status { margin-left: auto; color: var(--muted); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h2>Printer &amp; scale</h2>
+  <div class="row">
+    <label for="preset">Printer</label>
+    <select id="preset"></select>
+  </div>
+  <div class="row">
+    <label>Bed (mm)</label>
+    <input type="number" id="bx" min="10"> ×
+    <input type="number" id="by" min="10"> ×
+    <input type="number" id="bz" min="10">
+  </div>
+  <div class="row">
+    <label for="scale">Scale 1 :</label>
+    <input type="number" id="scale" min="1" step="1">
+    <label for="minwall" style="margin-left:10px">Min. wall (mm)</label>
+    <input type="number" id="minwall" min="0.1" step="0.1">
+  </div>
+  <div class="row">
+    <label><input type="radio" name="scope" value="model" checked> Whole model</label>
+    <label><input type="radio" name="scope" value="selection"> Selection only</label>
+    <span id="status"></span>
+    <button class="primary" id="run">Analyze</button>
+  </div>
+</div>
+
+<div id="results" class="hidden">
+  <div class="card">
+    <h2>At the chosen scale</h2>
+    <div class="stats">
+      <div class="stat"><b id="s-size">–</b><span>printed size (mm)</span></div>
+      <div class="stat"><b id="s-pieces">–</b><span>pieces needed</span></div>
+      <div class="stat"><b id="s-maxscale">–</b><span>largest scale in one piece</span></div>
+      <div class="stat"><b id="s-solid">–</b><span>parts not solid</span></div>
+      <div class="stat"><b id="s-thin">–</b><span>parts too thin</span></div>
+      <div class="stat"><b id="s-loose">–</b><span>loose faces (not in a group)</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Scale comparison</h2>
+    <table id="scales">
+      <thead><tr><th>Scale</th><th class="num">Printed size (mm)</th><th class="num">Pieces</th><th class="num">Too thin</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="note">Pieces is a straight-grid estimate (cuts parallel to the axes), trying the footprint both ways round on the bed.</p>
+  </div>
+
+  <div class="card">
+    <h2>Parts <span id="parts-count"></span></h2>
+    <div class="row">
+      <label><input type="checkbox" id="only-issues" checked> Only show problems</label>
+    </div>
+    <table id="parts">
+      <thead><tr><th>Part</th><th class="num">Thinnest (mm)</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="note">Thinnest = smallest wall found by shooting rays through the part, in printed mm at the chosen scale.
+      “*” means the part has many faces and only a sample was measured. “Show spot” selects the face where the thinnest wall was found.</p>
+  </div>
+</div>
+
+<script>
+  var PRESETS = [
+    { name: 'Bambu Lab X1 / P1 / A1 (256 × 256 × 256)', b: [256, 256, 256] },
+    { name: 'Bambu Lab A1 mini (180 × 180 × 180)',      b: [180, 180, 180] },
+    { name: 'Prusa MK4 (250 × 210 × 220)',              b: [250, 210, 220] },
+    { name: 'Prusa MINI (180 × 180 × 180)',             b: [180, 180, 180] },
+    { name: 'Creality Ender-3 (220 × 220 × 250)',       b: [220, 220, 250] },
+    { name: 'Custom',                                   b: null }
+  ];
+  var COMMON_SCALES = [50, 75, 100, 150, 200, 250, 300, 400, 500];
+  var data = null;
+
+  function $(id) { return document.getElementById(id); }
+  function num(id) { return parseFloat($(id).value) || 0; }
+  function fmt(v) { return (Math.round(v * 10) / 10).toLocaleString(); }
+
+  // ----- pure math (no DOM) --------------------------------------------------
+  function piecesFor(size, bed, n) {
+    var s = size.map(function (v) { return v / n; });
+    var z = Math.ceil(s[2] / bed[2]) || 1;
+    var a = (Math.ceil(s[0] / bed[0]) || 1) * (Math.ceil(s[1] / bed[1]) || 1);
+    var b = (Math.ceil(s[0] / bed[1]) || 1) * (Math.ceil(s[1] / bed[0]) || 1);
+    return Math.min(a, b) * z;
+  }
+  function maxScaleOnePiece(size, bed) {
+    // smallest N such that size/N fits the bed, either footprint orientation
+    var a = Math.max(size[0] / bed[0], size[1] / bed[1], size[2] / bed[2]);
+    var b = Math.max(size[0] / bed[1], size[1] / bed[0], size[2] / bed[2]);
+    return Math.ceil(Math.min(a, b));
+  }
+  function partThickness(p) {
+    // real-world mm; fall back to the smallest bounding-box side if no ray hit
+    if (p.thick !== null && p.thick !== undefined) return p.thick;
+    return Math.min.apply(null, p.dims);
+  }
+  function isThin(p, n, minWall) { return partThickness(p) / n < minWall; }
+
+  // ----- settings -------------------------------------------------------------
+  function settings() {
+    return { bed: [num('bx'), num('by'), num('bz')], scale: num('scale'),
+             minWall: num('minwall'), preset: $('preset').value };
+  }
+  function applySettings(s) {
+    s = s || {};
+    var p = s.preset !== undefined ? s.preset : '0';
+    $('preset').value = p;
+    var bed = s.bed || PRESETS[0].b;
+    $('bx').value = bed[0]; $('by').value = bed[1]; $('bz').value = bed[2];
+    $('scale').value = s.scale || 100;
+    $('minwall').value = s.minWall || 0.8;
+  }
+  function saveSettings() {
+    if (window.sketchup) sketchup.save_settings(JSON.stringify(settings()));
+  }
+  window.loadSettings = function (s) { applySettings(s); render(); };
+
+  // ----- rendering --------------------------------------------------------------
+  function render() {
+    if (!data) return;
+    var s = settings();
+    var n = s.scale > 0 ? s.scale : 100;
+    var bed = s.bed;
+    var size = data.size_mm;
+    var printed = size.map(function (v) { return v / n; });
+
+    var notSolid = data.parts.filter(function (p) { return !p.solid; }).length;
+    var thin = data.parts.filter(function (p) { return isThin(p, n, s.minWall); }).length;
+    var pieces = piecesFor(size, bed, n);
+
+    $('s-size').textContent = printed.map(fmt).join(' × ');
+    $('s-pieces').textContent = pieces;
+    $('s-pieces').className = pieces === 1 ? 'ok' : 'warn';
+    $('s-maxscale').textContent = size[0] ? '1:' + maxScaleOnePiece(size, bed) : '–';
+    $('s-solid').textContent = notSolid;
+    $('s-solid').className = notSolid ? 'bad' : 'ok';
+    $('s-thin').textContent = thin;
+    $('s-thin').className = thin ? 'warn' : 'ok';
+    $('s-loose').textContent = data.loose_faces;
+    $('s-loose').className = data.loose_faces ? 'warn' : 'ok';
+
+    // scale table
+    var scales = COMMON_SCALES.slice();
+    if (scales.indexOf(n) < 0) { scales.push(n); scales.sort(function (a, b) { return a - b; }); }
+    $('scales').tBodies[0].innerHTML = scales.map(function (sc) {
+      var t = data.parts.filter(function (p) { return isThin(p, sc, s.minWall); }).length;
+      var pc = piecesFor(size, bed, sc);
+      return '<tr' + (sc === n ? ' class="current"' : '') + '>' +
+        '<td>1:' + sc + '</td>' +
+        '<td class="num">' + size.map(function (v) { return fmt(v / sc); }).join(' × ') + '</td>' +
+        '<td class="num ' + (pc === 1 ? 'ok' : '') + '">' + pc + '</td>' +
+        '<td class="num ' + (t ? 'warn' : 'ok') + '">' + t + '</td>' +
+        '<td><button class="small" data-scale="' + sc + '">Use</button></td></tr>';
+    }).join('');
+
+    // parts table: problems first
+    var onlyIssues = $('only-issues').checked;
+    var rows = data.parts.map(function (p) {
+      return { p: p, thin: isThin(p, n, s.minWall) };
+    }).filter(function (r) {
+      return !onlyIssues || !r.p.solid || r.thin;
+    }).sort(function (a, b) {
+      var ra = (!a.p.solid ? 0 : 2) + (a.thin ? 0 : 1);
+      var rb = (!b.p.solid ? 0 : 2) + (b.thin ? 0 : 1);
+      return ra - rb || partThickness(a.p) - partThickness(b.p);
+    });
+
+    $('parts-count').textContent = '(' + rows.length + ' of ' + data.parts.length + ')';
+    $('parts').tBodies[0].innerHTML = rows.length ? rows.map(function (r) {
+      var p = r.p;
+      var badges = '';
+      if (!p.solid) badges += '<span class="badge bad">Not solid</span>';
+      if (r.thin) badges += '<span class="badge warn">Too thin</span>';
+      if (p.mixed) badges += '<span class="badge warn">Faces + nested groups</span>';
+      if (p.solid && !r.thin) badges += '<span class="badge ok">OK</span>';
+      var thickTxt = p.thick === null || p.thick === undefined
+        ? '<span class="bad" title="No opposite wall found — usually an open shell or single face">open</span>'
+        : fmt(p.thick / n) + (p.sampled ? '*' : '');
+      return '<tr><td><b>' + esc(p.name) + '</b> ' + badges +
+        '<div class="path">' + esc(p.path) + ' · ' + p.faces + ' faces</div></td>' +
+        '<td class="num ' + (r.thin ? 'warn' : '') + '">' + thickTxt + '</td>' +
+        '<td style="white-space:nowrap"><button class="small" data-show="' + p.idx + '">Show</button> ' +
+        (p.thick !== null && p.thick !== undefined
+          ? '<button class="small" data-spot="' + p.idx + '">Show spot</button>' : '') +
+        '</td></tr>';
+    }).join('') : '<tr><td colspan="3" class="ok">No problems found at this scale.</td></tr>';
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  window.renderResults = function (d) {
+    data = d;
+    $('run').disabled = false;
+    $('status').textContent = d.parts.length + ' parts checked in ' + d.seconds + ' s';
+    $('results').classList.remove('hidden');
+    render();
+  };
+  window.analysisError = function (msg) {
+    $('run').disabled = false;
+    $('status').innerHTML = '<span class="bad">' + esc(msg) + '</span>';
+  };
+
+  // ----- wiring ---------------------------------------------------------------
+  document.addEventListener('DOMContentLoaded', function () {
+    $('preset').innerHTML = PRESETS.map(function (p, i) {
+      return '<option value="' + i + '">' + p.name + '</option>';
+    }).join('');
+
+    $('preset').addEventListener('change', function () {
+      var p = PRESETS[+this.value];
+      if (p.b) { $('bx').value = p.b[0]; $('by').value = p.b[1]; $('bz').value = p.b[2]; }
+      saveSettings(); render();
+    });
+    ['bx', 'by', 'bz'].forEach(function (id) {
+      $(id).addEventListener('input', function () {
+        $('preset').value = String(PRESETS.length - 1); // Custom
+        saveSettings(); render();
+      });
+    });
+    ['scale', 'minwall'].forEach(function (id) {
+      $(id).addEventListener('input', function () { saveSettings(); render(); });
+    });
+    $('only-issues').addEventListener('change', render);
+
+    $('run').addEventListener('click', function () {
+      var scope = document.querySelector('input[name=scope]:checked').value;
+      this.disabled = true;
+      $('status').textContent = 'Analyzing… (large models can take a minute)';
+      if (window.sketchup) sketchup.analyze(scope);
+    });
+
+    document.body.addEventListener('click', function (e) {
+      var t = e.target;
+      if (t.dataset.scale) { $('scale').value = t.dataset.scale; saveSettings(); render(); }
+      if (t.dataset.show && window.sketchup) sketchup.show_part(+t.dataset.show, false);
+      if (t.dataset.spot && window.sketchup) sketchup.show_part(+t.dataset.spot, true);
+    });
+
+    applySettings(null);
+    if (window.sketchup) sketchup.ready();
+  });
+</script>
+</body>
+</html>
