@@ -70,6 +70,7 @@
     <label><input type="radio" name="scope" value="selection"> Selection only</label>
     <span id="status"></span>
     <button class="primary" id="run">Analyze</button>
+    <button class="hidden" id="cancel">Cancel</button>
   </div>
 </div>
 
@@ -298,21 +299,29 @@
     data = d;
     stale = false;
     hl = { mode: 'none', idx: -1 };
-    $('run').disabled = false;
+    setRunning(false);
     $('status').textContent = d.parts.length + ' parts checked in ' + d.seconds + ' s';
     $('stopped').classList.toggle('hidden', !d.stopped);
-    if (d.stopped) $('stopped').innerHTML = '<b>Stopped after ' + d.seconds + ' s</b> to keep SketchUp responsive: ' +
-      d.parts.length + ' of ' + d.total_parts + ' parts were checked, so totals below are incomplete. ' +
-      'Select one section and use <b>Selection only</b> to check the rest.';
+    if (d.stopped) $('stopped').innerHTML = '<b>Cancelled after ' + d.seconds + ' s.</b> ' +
+      d.parts.length + ' of ' + d.total_parts + ' parts were checked, so the totals below are incomplete.';
     $('results').classList.remove('hidden');
     render();
   };
-  window.analysisCancelled = function () {
-    $('run').disabled = false;
-    $('status').textContent = 'Cancelled.';
+  function setRunning(on) {
+    $('run').disabled = on;
+    $('cancel').classList.toggle('hidden', !on);
+    $('cancel').disabled = false;
+  }
+  window.analysisStarted = function (total) {
+    data = null;
+    $('results').classList.add('hidden');
+    $('status').textContent = 'Checking ' + total.toLocaleString() + ' parts… SketchUp stays usable, but editing the model stops the check.';
+  };
+  window.analysisProgress = function (p) {
+    $('status').textContent = 'Checked ' + p.done.toLocaleString() + ' of ' + p.total.toLocaleString() + ' parts…';
   };
   window.analysisError = function (msg) {
-    $('run').disabled = false;
+    setRunning(false);
     $('status').innerHTML = '<span class="bad">' + esc(msg) + '</span>';
   };
 
@@ -341,11 +350,16 @@
       if (hl.mode === 'all') clearHighlight(); else highlight('all', -1, true);
     });
     $('hl-clear').addEventListener('click', clearHighlight);
+    $('cancel').addEventListener('click', function () {
+      this.disabled = true;
+      $('status').textContent = 'Cancelling…';
+      if (window.sketchup) sketchup.cancel();
+    });
 
     $('run').addEventListener('click', function () {
       var scope = document.querySelector('input[name=scope]:checked').value;
-      this.disabled = true;
-      $('status').textContent = 'Analyzing… (large models can take a minute)';
+      setRunning(true);
+      $('status').textContent = 'Counting parts…';
       if (window.sketchup) sketchup.analyze(scope);
     });
 
