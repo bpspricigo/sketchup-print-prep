@@ -8,6 +8,8 @@
 #     faces and measuring the distance to where it exits the same part. The
 #     smallest value is the part's minimum wall thickness at real-world size.
 #   * All scale math (fit on bed, pieces, thin at 1:N) happens live in the dialog.
+#   * SketchUp is frozen while Ruby runs, so big jobs are guarded: a quick count
+#     first (asks before a large one) and a time limit that stops with partial results.
 #   * Highlights are drawn by an overlay (overlay.rb) from world-space points kept
 #     per part in @hl, so showing a problem never changes the model or selection.
 #
@@ -23,7 +25,11 @@ module BrunoTools
     MAX_RAYS_PER_PART = 800       # cap per part so big models stay fast
     RAY_EPS           = 0.0005    # inches; start offset so a ray doesn't hit its own face
     MAX_RAY_HOPS      = 4         # how many foreign hits to skip through
+    CONFIRM_RAYS      = 20_000    # estimated rays above which we ask before starting
+    TIME_LIMIT        = 60        # seconds; analysis stops here and shows what it has
     SETTINGS_KEY      = 'BrunoTools_PrintPrep'.freeze
+
+    class TimeUp < StandardError; end
 
     # ------------------------------------------------------------------ dialog
 
@@ -93,14 +99,32 @@ module BrunoTools
         base_tr   = Geom::Transformation.new
       end
 
-      started = Time.now
-      roots.each do |e|
-        if instance?(e)
-          walk(e, base_path, base_tr)
-        elsif e.is_a?(Sketchup::Face)
-          loose += 1
-          e.vertices.each { |v| @overall.add(v.position.transform(base_tr)) }
+      total_parts, total_faces, est_rays = estimate(roots)
+      if est_rays > CONFIRM_RAYS
+        msg = "This is a big job: #{delimit(total_parts)} parts with #{delimit(total_faces)} faces.\n\n" \
+              "SketchUp will be unresponsive while it runs (at most #{TIME_LIMIT} s, then it " \
+              "stops and shows the parts checked so far).\n\n" \
+              "Tip: select one section and use \"Selection only\" instead.\n\nContinue anyway?"
+        unless UI.messagebox(msg, MB_YESNO) == IDYES
+          js('analysisCancelled', nil)
+          return
         end
+      end
+
+      started   = Time.now
+      @deadline = started + TIME_LIMIT
+      stopped   = false
+      begin
+        roots.each do |e|
+          if instance?(e)
+            walk(e, base_path, base_tr)
+          elsif e.is_a?(Sketchup::Face)
+            loose += 1
+            e.vertices.each { |v| @overall.add(v.position.transform(base_tr)) }
+          end
+        end
+      rescue TimeUp
+        stopped = true
       end
       Sketchup.status_text = ''
       watch(model)
@@ -116,7 +140,9 @@ module BrunoTools
         size_mm:     size,
         loose_faces: loose,
         parts:       @parts,
-        seconds:     (Time.now - started).round(1)
+        seconds:     (Time.now - started).round(1),
+        stopped:     stopped,
+        total_parts: total_parts
       })
     rescue StandardError => e
       Sketchup.status_text = ''
@@ -133,6 +159,36 @@ module BrunoTools
       layer.nil? || layer.visible?
     end
 
+    # Cheap pre-pass over the same parts walk() will visit: [parts, faces, rays].
+    # Face counts are cached per definition, since bricks etc. are often one
+    # component placed thousands of times.
+    def self.estimate(roots)
+      counts = Hash.new do |h, d|
+        h[d] = d.entities.count { |c| c.is_a?(Sketchup::Face) && !c.hidden? }
+      end
+      totals = [0, 0, 0]
+      visit  = lambda do |inst|
+        next unless printable?(inst)
+        n = counts[inst.definition]
+        if n > 0
+          totals[0] += 1
+          totals[1] += n
+          totals[2] += [n, MAX_RAYS_PER_PART].min
+        end
+        inst.definition.entities.each { |c| visit.call(c) if instance?(c) }
+      end
+      roots.each { |e| visit.call(e) if instance?(e) }
+      totals
+    end
+
+    def self.delimit(n)
+      n.to_s.reverse.scan(/\d{1,3}/).join(',').reverse
+    end
+
+    def self.check_time
+      raise TimeUp if Time.now > @deadline
+    end
+
     def self.walk(inst, parent_path, parent_tr)
       return unless printable?(inst)
 
@@ -147,6 +203,7 @@ module BrunoTools
     end
 
     def self.record_part(inst, path, tr, faces, has_children)
+      check_time
       Sketchup.status_text = "Print Prep: checking part #{@parts.size + 1}…"
 
       bb = Geom::BoundingBox.new
@@ -210,6 +267,7 @@ module BrunoTools
 
       faces.each_with_index do |f, i|
         next unless (i % step).zero?
+        check_time if (i / step % 50).zero?   # one part can hold up to 800 rays
         tris = face_triangles(f, tr)
         pt, normal = face_sample(f, tr, tris)
         next unless pt

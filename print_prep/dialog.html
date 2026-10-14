@@ -74,6 +74,7 @@
 </div>
 
 <div id="results" class="hidden">
+  <div id="stopped" class="banner hidden"></div>
   <div id="stale" class="banner hidden">The model changed since this analysis. Click <b>Analyze</b> again to refresh results and highlights.</div>
   <div class="card">
     <h2>At the chosen scale</h2>
@@ -299,8 +300,16 @@
     hl = { mode: 'none', idx: -1 };
     $('run').disabled = false;
     $('status').textContent = d.parts.length + ' parts checked in ' + d.seconds + ' s';
+    $('stopped').classList.toggle('hidden', !d.stopped);
+    if (d.stopped) $('stopped').innerHTML = '<b>Stopped after ' + d.seconds + ' s</b> to keep SketchUp responsive: ' +
+      d.parts.length + ' of ' + d.total_parts + ' parts were checked, so totals below are incomplete. ' +
+      'Select one section and use <b>Selection only</b> to check the rest.';
     $('results').classList.remove('hidden');
     render();
+  };
+  window.analysisCancelled = function () {
+    $('run').disabled = false;
+    $('status').textContent = 'Cancelled.';
   };
   window.analysisError = function (msg) {
     $('run').disabled = false;
