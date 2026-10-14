@@ -1,4 +1,4 @@
-# Print Prep — SketchUp extension (v0.2)
+# Print Prep — SketchUp extension (v0.3)
 
 Requires SketchUp 2023 or newer.
 
@@ -14,7 +14,10 @@ Checks a house model before 3D printing:
 2. In SketchUp: **Extensions > Extension Manager > Install Extension...** and pick the file.
 3. Open it from **Extensions > Print Prep...**
 
-To update, do the same with the newer `.rbz`. SketchUp replaces the old version.
+## Updates
+A few seconds after SketchUp starts, Print Prep checks this repo's newest release. If there's a newer version it asks whether to install it; the new version is active after restarting SketchUp. Saying No skips that version until the next one comes out. **Extensions > Print Prep: Check for updates** checks on demand.
+
+Versions before 0.3 have no updater: install 0.3 or newer by hand once (steps above).
 
 ## Use
 1. Pick the printer (or type the bed size), the scale, and the minimum wall.
@@ -22,7 +25,7 @@ To update, do the same with the newer `.rbz`. SketchUp replaces the old version.
 2. Click **Analyze** (whole model or just the selection).
 3. Change the scale freely afterwards: everything recalculates without re-analyzing.
 
-## Limitations (v0.2)
+## Limitations (v0.3)
 - Read-only: it never changes the model.
 - "Pieces" is a straight-grid estimate; real cuts can be smarter.
 - Thickness is measured from up to 800 faces per part (marked `*` when sampled), so a tiny thin detail on a huge part can be missed, and only measured faces can turn orange.
@@ -36,4 +39,4 @@ Download the repo (**Code > Download ZIP**, or `git clone`), then double-click:
 - **`install-dev.bat`** copies the extension straight into SketchUp's Plugins folder. Restart SketchUp to load it. This is the fastest way to try a change.
 - **`build.bat`** creates `print_prep.rbz` in the same folder, if you want a file to share.
 
-You don't normally need `build.bat`: every push to `main` builds the `.rbz` on GitHub and attaches it to a Release (see `.github/workflows/release.yml`). Bump `ext.version` in `print_prep.rb` to start a new release; otherwise the current release's file is replaced.
+You don't normally need `build.bat`: every push to `main` builds the `.rbz` on GitHub and attaches it to a Release (see `.github/workflows/release.yml`). Changes go through pull requests; merging one into `main` publishes a release, which installed copies then offer as an update. Every PR that touches the extension must bump `ext.version` in `print_prep.rb` (a check on the PR enforces it).
