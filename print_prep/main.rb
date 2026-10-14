@@ -8,6 +8,8 @@
 #     faces and measuring the distance to where it exits the same part. The
 #     smallest value is the part's minimum wall thickness at real-world size.
 #   * All scale math (fit on bed, pieces, thin at 1:N) happens live in the dialog.
+#   * SketchUp is frozen while Ruby runs, so the analysis works in short timer
+#     slices (step) and SketchUp stays usable; editing the model stops it.
 #   * Highlights are drawn by an overlay (overlay.rb) from world-space points kept
 #     per part in @hl, so showing a problem never changes the model or selection.
 #
@@ -23,6 +25,7 @@ module BrunoTools
     MAX_RAYS_PER_PART = 800       # cap per part so big models stay fast
     RAY_EPS           = 0.0005    # inches; start offset so a ray doesn't hit its own face
     MAX_RAY_HOPS      = 4         # how many foreign hits to skip through
+    SLICE             = 0.15      # seconds of work before SketchUp gets control back
     SETTINGS_KEY      = 'BrunoTools_PrintPrep'.freeze
 
     # ------------------------------------------------------------------ dialog
@@ -46,11 +49,16 @@ module BrunoTools
       @dialog.add_action_callback('analyze')       { |_c, scope| run_analysis(scope.to_s) }
       @dialog.add_action_callback('highlight')     { |_c, json| highlight(JSON.parse(json.to_s)) }
       @dialog.add_action_callback('clear_highlight') { |_c| clear_highlight }
+      @dialog.add_action_callback('cancel')        { |_c| cancel_analysis }
       @dialog.add_action_callback('save_settings') do |_c, json|
         Sketchup.write_default(SETTINGS_KEY, 'settings', json.to_s)
       end
 
-      @dialog.set_on_closed { clear_highlight }
+      @dialog.set_on_closed do
+        @job = nil
+        Sketchup.status_text = ''
+        clear_highlight
+      end
       @dialog.show
     end
 
@@ -72,12 +80,8 @@ module BrunoTools
     # ---------------------------------------------------------------- analysis
 
     def self.run_analysis(scope)
-      model    = Sketchup.active_model
-      clear_highlight
-      @parts   = []
-      @hl      = []
-      @overall = Geom::BoundingBox.new
-      loose    = 0
+      return if @job
+      model = Sketchup.active_model
 
       if scope == 'selection'
         roots     = model.selection.to_a
@@ -93,18 +97,51 @@ module BrunoTools
         base_tr   = Geom::Transformation.new
       end
 
-      started = Time.now
-      roots.each do |e|
-        if instance?(e)
-          walk(e, base_path, base_tr)
-        elsif e.is_a?(Sketchup::Face)
-          loose += 1
-          e.vertices.each { |v| @overall.add(v.position.transform(base_tr)) }
-        end
-      end
-      Sketchup.status_text = ''
+      clear_highlight
+      @parts   = []
+      @hl      = []
+      @overall = Geom::BoundingBox.new
+      job = @job = {
+        scope:   scope,
+        total:   count_parts(roots),
+        loose:   0,
+        started: Time.now,
+        stack:   roots.reverse.map { |e| [e, base_path, base_tr] },
+        cancel:  false
+      }
       watch(model)
+      js('analysisStarted', job[:total])
+      UI.start_timer(0, false) { step(job) }
+    rescue StandardError => e
+      fail_job(e)
+    end
 
+    # One slice of work, then hand SketchUp back and schedule the next slice.
+    # Comparing against @job drops a timer left over from a cancelled run.
+    def self.step(job)
+      return unless @job.equal?(job)
+      return finish_job(job, true) if job[:cancel]
+
+      until_t = Time.now + SLICE
+      while (item = job[:stack].pop)
+        visit(job, *item)
+        break if Time.now > until_t
+      end
+
+      if job[:stack].empty?
+        finish_job(job, false)
+      else
+        Sketchup.status_text = "Print Prep: checked #{@parts.size} of #{job[:total]} parts…"
+        js('analysisProgress', { done: @parts.size, total: job[:total] })
+        UI.start_timer(0, false) { step(job) }
+      end
+    rescue StandardError => e
+      fail_job(e)
+    end
+
+    def self.finish_job(job, stopped)
+      @job = nil
+      Sketchup.status_text = ''
       size = if @overall.empty?
                [0, 0, 0]
              else
@@ -112,15 +149,24 @@ module BrunoTools
              end
 
       js('renderResults', {
-        scope:       scope,
+        scope:       job[:scope],
         size_mm:     size,
-        loose_faces: loose,
+        loose_faces: job[:loose],
         parts:       @parts,
-        seconds:     (Time.now - started).round(1)
+        seconds:     (Time.now - job[:started]).round(1),
+        stopped:     stopped,
+        total_parts: job[:total]
       })
-    rescue StandardError => e
+    end
+
+    def self.fail_job(e)
+      @job = nil
       Sketchup.status_text = ''
       js('analysisError', "Analysis failed: #{e.class}: #{e.message}")
+    end
+
+    def self.cancel_analysis
+      @job[:cancel] = true if @job
     end
 
     def self.instance?(e)
@@ -133,21 +179,44 @@ module BrunoTools
       layer.nil? || layer.visible?
     end
 
-    def self.walk(inst, parent_path, parent_tr)
-      return unless printable?(inst)
+    # Number of parts visit() will record, for the progress count. Face counts
+    # are cached per definition, since bricks etc. are often one component
+    # placed thousands of times.
+    def self.count_parts(roots)
+      has_faces = Hash.new do |h, d|
+        h[d] = d.entities.any? { |c| c.is_a?(Sketchup::Face) && !c.hidden? }
+      end
+      total = 0
+      count = lambda do |inst|
+        next unless printable?(inst)
+        total += 1 if has_faces[inst.definition]
+        inst.definition.entities.each { |c| count.call(c) if instance?(c) }
+      end
+      roots.each { |e| count.call(e) if instance?(e) }
+      total
+    end
 
-      path     = parent_path + [inst]
-      tr       = parent_tr * inst.transformation
-      ents     = inst.definition.entities
+    # Checks one entity from the work stack and queues its nested groups.
+    def self.visit(job, e, parent_path, parent_tr)
+      return unless e.valid?
+      if e.is_a?(Sketchup::Face)
+        job[:loose] += 1
+        e.vertices.each { |v| @overall.add(v.position.transform(parent_tr)) }
+        return
+      end
+      return unless instance?(e) && printable?(e)
+
+      path     = parent_path + [e]
+      tr       = parent_tr * e.transformation
+      ents     = e.definition.entities
       faces    = ents.grep(Sketchup::Face).select { |f| !f.hidden? }
       children = ents.select { |c| instance?(c) }
 
-      record_part(inst, path, tr, faces, !children.empty?) unless faces.empty?
-      children.each { |c| walk(c, path, tr) }
+      record_part(e, path, tr, faces, !children.empty?) unless faces.empty?
+      children.reverse_each { |c| job[:stack].push([c, path, tr]) }
     end
 
     def self.record_part(inst, path, tr, faces, has_children)
-      Sketchup.status_text = "Print Prep: checking part #{@parts.size + 1}…"
 
       bb = Geom::BoundingBox.new
       faces.each { |f| f.vertices.each { |v| bb.add(v.position.transform(tr)) } }
@@ -384,6 +453,11 @@ module BrunoTools
     end
 
     def self.model_changed
+      if @job
+        @job = nil
+        Sketchup.status_text = ''
+        js('analysisError', 'The model was edited during the analysis, so it stopped. Click Analyze again.')
+      end
       return if @stale
       @stale = true
       clear_highlight
