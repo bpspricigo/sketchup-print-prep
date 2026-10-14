@@ -41,6 +41,8 @@
   .note { color: var(--muted); font-size: 12px; }
   #status { margin-left: auto; color: var(--muted); }
   .hidden { display: none; }
+  tr.lit td { background: #fdf3e1; }
+  .banner { background: #fdf3e1; border: 1px solid #f0d9a8; border-radius: 6px; padding: 8px 10px; margin-bottom: 12px; }
 </style>
 </head>
 <body>
@@ -72,6 +74,7 @@
 </div>
 
 <div id="results" class="hidden">
+  <div id="stale" class="banner hidden">The model changed since this analysis. Click <b>Analyze</b> again to refresh results and highlights.</div>
   <div class="card">
     <h2>At the chosen scale</h2>
     <div class="stats">
@@ -97,13 +100,20 @@
     <h2>Parts <span id="parts-count"></span></h2>
     <div class="row">
       <label><input type="checkbox" id="only-issues" checked> Only show problems</label>
+      <span style="margin-left:auto"></span>
+      <button class="small" id="hl-all">Highlight all problems</button>
+      <button class="small" id="hl-clear">Clear highlights</button>
     </div>
     <table id="parts">
       <thead><tr><th>Part</th><th class="num">Thinnest (mm)</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <p class="note">Thinnest = smallest wall found by shooting rays through the part, in printed mm at the chosen scale.
-      “*” means the part has many faces and only a sample was measured. “Show spot” selects the face where the thinnest wall was found.</p>
+      “*” means the part has many faces and only a sample was measured.</p>
+    <p class="note">Highlights are drawn over the model and never change it:
+      <span class="bad">red lines</span> are edges that break the solid (holes, internal faces, stray lines),
+      <span class="warn">orange</span> faces are too thin at this scale, and the purple line is the thinnest wall
+      measured. “Show” zooms to a part, “Show spot” to its thinnest wall.</p>
   </div>
 </div>
 
@@ -118,6 +128,8 @@
   ];
   var COMMON_SCALES = [50, 75, 100, 150, 200, 250, 300, 400, 500];
   var data = null;
+  var hl = { mode: 'none', idx: -1 };   // what the viewport overlay is showing
+  var stale = false;
 
   function $(id) { return document.getElementById(id); }
   function num(id) { return parseFloat($(id).value) || 0; }
@@ -163,9 +175,48 @@
   }
   window.loadSettings = function (s) { applySettings(s); render(); };
 
+  // ----- highlights -------------------------------------------------------------
+  function highlight(mode, idx, zoom) {
+    if (stale || !data) return;
+    hl = { mode: mode, idx: idx };
+    var s = settings();
+    if (window.sketchup) sketchup.highlight(JSON.stringify({
+      mode: mode, idx: idx, scale: s.scale > 0 ? s.scale : 100, minWall: s.minWall, zoom: zoom
+    }));
+    render();
+  }
+  function clearHighlight() {
+    hl = { mode: 'none', idx: -1 };
+    if (window.sketchup) sketchup.clear_highlight();
+    render();
+  }
+  // Scale or min. wall changed: redraw what's highlighted without moving the camera.
+  function refreshHighlight() {
+    if (hl.mode !== 'none') highlight(hl.mode, hl.idx, false);
+  }
+  window.markStale = function () {
+    stale = true;
+    hl = { mode: 'none', idx: -1 };
+    render();
+  };
+
+  function causeBadges(p) {
+    if (p.solid || !p.issues) return '';
+    var i = p.issues, out = '';
+    if (i.open)  out += '<span class="badge bad">' + i.open + ' open edge' + (i.open > 1 ? 's' : '') + '</span>';
+    if (i.multi) out += '<span class="badge bad">internal faces (' + i.multi + ' edge' + (i.multi > 1 ? 's' : '') + ')</span>';
+    if (i.stray) out += '<span class="badge bad">' + i.stray + ' stray line' + (i.stray > 1 ? 's' : '') + '</span>';
+    if (!out) out = '<span class="badge bad" title="Every edge has two faces. Often some faces are reversed.">cause unclear (maybe reversed faces)</span>';
+    return out;
+  }
+
   // ----- rendering --------------------------------------------------------------
   function render() {
     if (!data) return;
+    $('stale').classList.toggle('hidden', !stale);
+    $('hl-all').disabled = stale;
+    $('hl-all').classList.toggle('primary', hl.mode === 'all');
+    $('hl-clear').disabled = stale || hl.mode === 'none';
     var s = settings();
     var n = s.scale > 0 ? s.scale : 100;
     var bed = s.bed;
@@ -217,19 +268,21 @@
     $('parts').tBodies[0].innerHTML = rows.length ? rows.map(function (r) {
       var p = r.p;
       var badges = '';
-      if (!p.solid) badges += '<span class="badge bad">Not solid</span>';
+      if (!p.solid) badges += '<span class="badge bad">Not solid</span>' + causeBadges(p);
       if (r.thin) badges += '<span class="badge warn">Too thin</span>';
       if (p.mixed) badges += '<span class="badge warn">Faces + nested groups</span>';
       if (p.solid && !r.thin) badges += '<span class="badge ok">OK</span>';
       var thickTxt = p.thick === null || p.thick === undefined
         ? '<span class="bad" title="No opposite wall found — usually an open shell or single face">open</span>'
         : fmt(p.thick / n) + (p.sampled ? '*' : '');
-      return '<tr><td><b>' + esc(p.name) + '</b> ' + badges +
+      var lit = (hl.mode === 'part' || hl.mode === 'spot') && hl.idx === p.idx;
+      var dis = stale ? ' disabled' : '';
+      return '<tr' + (lit ? ' class="lit"' : '') + '><td><b>' + esc(p.name) + '</b> ' + badges +
         '<div class="path">' + esc(p.path) + ' · ' + p.faces + ' faces</div></td>' +
         '<td class="num ' + (r.thin ? 'warn' : '') + '">' + thickTxt + '</td>' +
-        '<td style="white-space:nowrap"><button class="small" data-show="' + p.idx + '">Show</button> ' +
+        '<td style="white-space:nowrap"><button class="small" data-show="' + p.idx + '"' + dis + '>Show</button> ' +
         (p.thick !== null && p.thick !== undefined
-          ? '<button class="small" data-spot="' + p.idx + '">Show spot</button>' : '') +
+          ? '<button class="small" data-spot="' + p.idx + '"' + dis + '>Show spot</button>' : '') +
         '</td></tr>';
     }).join('') : '<tr><td colspan="3" class="ok">No problems found at this scale.</td></tr>';
   }
@@ -242,6 +295,8 @@
 
   window.renderResults = function (d) {
     data = d;
+    stale = false;
+    hl = { mode: 'none', idx: -1 };
     $('run').disabled = false;
     $('status').textContent = d.parts.length + ' parts checked in ' + d.seconds + ' s';
     $('results').classList.remove('hidden');
@@ -270,9 +325,13 @@
       });
     });
     ['scale', 'minwall'].forEach(function (id) {
-      $(id).addEventListener('input', function () { saveSettings(); render(); });
+      $(id).addEventListener('input', function () { saveSettings(); render(); refreshHighlight(); });
     });
     $('only-issues').addEventListener('change', render);
+    $('hl-all').addEventListener('click', function () {
+      if (hl.mode === 'all') clearHighlight(); else highlight('all', -1, true);
+    });
+    $('hl-clear').addEventListener('click', clearHighlight);
 
     $('run').addEventListener('click', function () {
       var scope = document.querySelector('input[name=scope]:checked').value;
@@ -283,9 +342,9 @@
 
     document.body.addEventListener('click', function (e) {
       var t = e.target;
-      if (t.dataset.scale) { $('scale').value = t.dataset.scale; saveSettings(); render(); }
-      if (t.dataset.show && window.sketchup) sketchup.show_part(+t.dataset.show, false);
-      if (t.dataset.spot && window.sketchup) sketchup.show_part(+t.dataset.spot, true);
+      if (t.dataset.scale) { $('scale').value = t.dataset.scale; saveSettings(); render(); refreshHighlight(); }
+      if (t.dataset.show) highlight('part', +t.dataset.show, true);
+      if (t.dataset.spot) highlight('spot', +t.dataset.spot, true);
     });
 
     applySettings(null);
