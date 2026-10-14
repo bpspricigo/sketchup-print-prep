@@ -1,11 +1,13 @@
-# Print Prep — SketchUp extension (v0.1)
+# Print Prep — SketchUp extension (v0.2)
+
+Requires SketchUp 2023 or newer.
 
 Checks a house model before 3D printing:
 
 - **Solid check.** Lists every group/component that isn't a closed solid. These are the parts that make Subtract/Intersect/Split fail.
 - **Scale vs. printer bed.** Shows the printed size at 1:N, how many pieces it needs, and the largest scale that fits in one piece.
 - **Thin walls.** Shoots rays through each part to find its thinnest wall, then flags parts that end up below the minimum wall thickness at the chosen scale.
-- **Show / Show spot.** Zooms to a problem part, or opens it and selects the exact face where the thinnest wall is.
+- **Highlights.** Draws problems over the model without changing it: red lines on edges that break the solid (holes, internal faces, stray lines), orange on faces too thin at the chosen scale, and a purple line with the measured value across the thinnest wall. **Show** zooms to one part, **Show spot** to its thinnest wall, and **Highlight all problems** shows everything at once. Highlights clear when the model is edited; analyze again to refresh them.
 
 ## Install (Windows)
 1. Go to the repo's **Releases** page and download `print_prep.rbz` from the newest release.
@@ -20,10 +22,10 @@ To update, do the same with the newer `.rbz`. SketchUp replaces the old version.
 2. Click **Analyze** (whole model or just the selection).
 3. Change the scale freely afterwards: everything recalculates without re-analyzing.
 
-## Limitations (v0.1)
+## Limitations (v0.2)
 - Read-only: it never changes the model.
 - "Pieces" is a straight-grid estimate; real cuts can be smarter.
-- Thickness is measured from up to 800 faces per part (marked `*` when sampled), so a tiny thin detail on a huge part can be missed.
+- Thickness is measured from up to 800 faces per part (marked `*` when sampled), so a tiny thin detail on a huge part can be missed, and only measured faces can turn orange.
 - Faces sitting directly in the model (not inside a group) are only counted, not checked.
 - Hidden parts and parts on hidden tags are skipped.
 - Use Solid Inspector² to actually fix non-solid parts.

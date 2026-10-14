@@ -14,7 +14,7 @@ module BrunoTools
       ext = SketchupExtension.new('Print Prep', File.join(PLUGIN_DIR, 'main'))
       ext.description = 'Prepare house models for 3D printing: solid check, ' \
                         'scale vs. printer bed, thin-part detection.'
-      ext.version     = '0.1.0'
+      ext.version     = '0.2.0'
       ext.creator     = 'Bruno'
       Sketchup.register_extension(ext, true)
       file_loaded(__FILE__)

@@ -8,11 +8,14 @@
 #     faces and measuring the distance to where it exits the same part. The
 #     smallest value is the part's minimum wall thickness at real-world size.
 #   * All scale math (fit on bed, pieces, thin at 1:N) happens live in the dialog.
+#   * Highlights are drawn by an overlay (overlay.rb) from world-space points kept
+#     per part in @hl, so showing a problem never changes the model or selection.
 #
 # Units: SketchUp works in inches internally; everything sent to the dialog is mm.
 
 require 'sketchup.rb'
 require 'json'
+require_relative 'overlay' if defined?(Sketchup::Overlay)
 
 module BrunoTools
   module PrintPrep
@@ -40,11 +43,13 @@ module BrunoTools
 
       @dialog.add_action_callback('ready')         { |_c| send_settings }
       @dialog.add_action_callback('analyze')       { |_c, scope| run_analysis(scope.to_s) }
-      @dialog.add_action_callback('show_part')     { |_c, idx, spot| show_part(idx.to_i, spot ? true : false) }
+      @dialog.add_action_callback('highlight')     { |_c, json| highlight(JSON.parse(json.to_s)) }
+      @dialog.add_action_callback('clear_highlight') { |_c| clear_highlight }
       @dialog.add_action_callback('save_settings') do |_c, json|
         Sketchup.write_default(SETTINGS_KEY, 'settings', json.to_s)
       end
 
+      @dialog.set_on_closed { clear_highlight }
       @dialog.show
     end
 
@@ -67,9 +72,9 @@ module BrunoTools
 
     def self.run_analysis(scope)
       model    = Sketchup.active_model
+      clear_highlight
       @parts   = []
-      @paths   = []
-      @spots   = []
+      @hl      = []
       @overall = Geom::BoundingBox.new
       loose    = 0
 
@@ -97,6 +102,7 @@ module BrunoTools
         end
       end
       Sketchup.status_text = ''
+      watch(model)
 
       size = if @overall.empty?
                [0, 0, 0]
@@ -148,6 +154,7 @@ module BrunoTools
 
       solid = has_children ? faces_closed?(faces) : inst.manifold?
       thick = measure_thickness(path, tr, faces)
+      edges = solid ? { open: [], multi: [], stray: [] } : bad_edges(inst.definition.entities, tr)
 
       @parts << {
         idx:     @parts.size,
@@ -158,10 +165,10 @@ module BrunoTools
         faces:   faces.size,
         dims:    [bb.width, bb.height, bb.depth].map { |v| v.to_mm.round(1) },
         thick:   thick[:min_mm] && thick[:min_mm].round(2),
-        sampled: thick[:sampled]
+        sampled: thick[:sampled],
+        issues:  edges.transform_values { |pts| pts.size / 2 }
       }
-      @paths << path
-      @spots << thick[:face]
+      @hl << { box: bb, edges: edges, faces: thick[:faces], spot: thick[:spot], solid: solid }
     end
 
     def self.part_name(inst)
@@ -176,40 +183,63 @@ module BrunoTools
       faces.flat_map(&:edges).uniq.all? { |e| e.faces.size == 2 }
     end
 
+    # Edges that stop a part being solid, as world-space point pairs:
+    #   open: only 1 face (a hole)   multi: 3+ faces (internal faces)   stray: no face
+    def self.bad_edges(ents, tr)
+      out = { open: [], multi: [], stray: [] }
+      ents.grep(Sketchup::Edge).each do |e|
+        n   = e.faces.size
+        key = if n.zero? then :stray
+              elsif n == 1 then :open
+              elsif n > 2 then :multi
+              end
+        out[key] << e.start.position.transform(tr) << e.end.position.transform(tr) if key
+      end
+      out
+    end
+
     # -------------------------------------------------------------- thickness
 
     def self.measure_thickness(path, tr, faces)
       model  = Sketchup.active_model
       step   = [(faces.size.to_f / MAX_RAYS_PER_PART).ceil, 1].max
       best   = nil
-      face   = nil
+      spot   = nil
+      done   = []
 
       faces.each_with_index do |f, i|
         next unless (i % step).zero?
-        pt, normal = face_sample(f, tr)
+        tris = face_triangles(f, tr)
+        pt, normal = face_sample(f, tr, tris)
         next unless pt
-        d = thickness_at(model, pt, normal, path)
+        d, exit_pt = thickness_at(model, pt, normal, path)
         next unless d
+        done << [tris.flatten, d]
         if best.nil? || d < best
           best = d
-          face = f
+          spot = [pt, exit_pt, d]
         end
       end
 
-      { min_mm: best && best.to_mm, face: face, sampled: step > 1 }
+      { min_mm: best && best.to_mm, spot: spot, faces: done, sampled: step > 1 }
+    end
+
+    # The face's triangles in world coordinates, as [[a, b, c], ...].
+    def self.face_triangles(face, tr)
+      mesh = face.mesh(0)
+      (1..mesh.count_polygons).map do |k|
+        mesh.polygon_points_at(k).map { |p| p.transform(tr) }
+      end
     end
 
     # A point guaranteed to lie on the face (centroid of its largest triangle)
     # plus the outward normal, both in world coordinates.
-    def self.face_sample(face, tr)
-      mesh = face.mesh(0)
-      n    = mesh.count_polygons
-      return nil if n.zero?
+    def self.face_sample(face, tr, tris)
+      return nil if tris.empty?
 
       best_tri  = nil
       best_area = -1.0
-      (1..[n, 8].min).each do |k|
-        a, b, c = mesh.polygon_points_at(k).map { |p| p.transform(tr) }
+      tris.each do |a, b, c|
         cross = (b - a) * (c - a)
         area  = cross.length
         if area > best_area
@@ -231,7 +261,8 @@ module BrunoTools
     end
 
     # Distance from pt, going inward (against the normal), to where the ray
-    # exits the same part. Skips hits on other geometry in between.
+    # exits the same part, plus that exit point. Skips hits on other geometry
+    # in between.
     def self.thickness_at(model, pt, normal, path)
       dir       = normal.reverse
       start     = pt.offset(dir, RAY_EPS)
@@ -243,7 +274,7 @@ module BrunoTools
 
         hit_pt, hit_path = res
         travelled += start.distance(hit_pt)
-        return travelled if hit_path.last.is_a?(Sketchup::Face) && hit_path[0..-2] == path
+        return [travelled, hit_pt] if hit_path.last.is_a?(Sketchup::Face) && hit_path[0..-2] == path
 
         start      = hit_pt.offset(dir, RAY_EPS)
         travelled += RAY_EPS
@@ -251,27 +282,111 @@ module BrunoTools
       nil
     end
 
-    # ------------------------------------------------------------- navigation
+    # ------------------------------------------------------------- highlights
 
-    def self.show_part(idx, spot)
-      path = @paths && @paths[idx]
-      return unless path && path.all?(&:valid?)
+    # opts (from the dialog): mode 'all' | 'part' | 'spot', idx, scale, minWall (mm),
+    # zoom (false when only the scale or min. wall changed: redraw, don't move).
+    def self.highlight(opts)
+      return js('analysisError', 'Highlights need SketchUp 2023 or newer.') unless defined?(HighlightOverlay)
+      return if @hl.nil? || @stale
 
-      model  = Sketchup.active_model
-      target = spot ? @spots[idx] : path.last
-      ctx    = spot ? path : path[0..-2]
-      return unless target && target.valid?
+      model = @model
+      return unless model && model.valid? && model == Sketchup.active_model
 
-      begin
-        model.active_path = ctx.empty? ? nil : ctx
-      rescue ArgumentError, NoMethodError
-        # Older SketchUp or invalid path: fall back to the top-level parent.
-        target = path.first
+      mode  = opts['mode'].to_s.to_sym
+      idx   = opts['idx'].to_i
+      scale = [opts['scale'].to_f, 1].max
+      limit = (opts['minWall'].to_f * scale).mm
+      return unless mode == :all || @hl[idx]
+
+      ov = overlay(model)
+      ov.set(mode, idx, limit, scale.round)
+      ov.enabled = true
+      zoom_to(model.active_view, mode, idx) if opts['zoom']
+      model.active_view.invalidate
+    end
+
+    def self.clear_highlight
+      ov = @overlays && @model && @overlays[@model]
+      return unless ov
+      ov.clear
+      @model.active_view.invalidate if @model.valid?
+    end
+
+    # One overlay per model, added the first time it's needed.
+    def self.overlay(model)
+      @overlays ||= {}
+      ov = @overlays[model]
+      unless ov
+        ov = HighlightOverlay.new
+        model.overlays.add(ov)
+        @overlays[model] = ov
+      end
+      ov.parts = @hl unless ov.parts.equal?(@hl)
+      ov
+    end
+
+    # Keeps the current view direction and moves the camera so the target fills the view.
+    def self.zoom_to(view, mode, idx)
+      bb = Geom::BoundingBox.new
+      if mode == :all
+        @hl.each { |p| bb.add(p[:box]) }
+      elsif mode == :spot && @hl[idx][:spot]
+        a, b, d = @hl[idx][:spot]
+        mid = Geom.linear_combination(0.5, a, 0.5, b)
+        pad = [d * 4, @hl[idx][:box].diagonal * 0.1].max
+        bb.add(mid.offset(Geom::Vector3d.new(pad, pad, pad)),
+               mid.offset(Geom::Vector3d.new(-pad, -pad, -pad)))
+      else
+        bb.add(@hl[idx][:box])
+      end
+      return if bb.empty?
+
+      cam    = view.camera
+      center = bb.center
+      radius = [bb.diagonal / 2.0 * 1.15, 0.1].max
+      aspect = view.vpwidth.to_f / [view.vpheight, 1].max
+
+      if cam.perspective?
+        vfov = cam.fov.degrees
+        hfov = 2 * Math.atan(Math.tan(vfov / 2) * aspect)
+        dist = radius / Math.sin([vfov, hfov].min / 2)
+      else
+        dist = radius * 3
+        cam.height = 2 * radius / [aspect, 1].min
+      end
+      cam.set(center.offset(cam.direction.reverse, dist), center, cam.up)
+      view.camera = cam
+    end
+
+    # Any edit or undo makes the stored highlight points unreliable.
+    class ChangeWatcher < Sketchup::ModelObserver
+      def onTransactionCommit(_model)
+        PrintPrep.model_changed
       end
 
-      model.selection.clear
-      model.selection.add(target)
-      model.active_view.zoom(model.selection)
+      def onTransactionUndo(_model)
+        PrintPrep.model_changed
+      end
+
+      def onTransactionRedo(_model)
+        PrintPrep.model_changed
+      end
+    end
+
+    def self.watch(model)
+      @watcher ||= ChangeWatcher.new
+      @model.remove_observer(@watcher) if @model && @model.valid?
+      model.add_observer(@watcher)
+      @model = model
+      @stale = false
+    end
+
+    def self.model_changed
+      return if @stale
+      @stale = true
+      clear_highlight
+      js('markStale', nil)
     end
 
     # ------------------------------------------------------------------- menu
