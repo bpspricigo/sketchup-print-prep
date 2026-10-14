@@ -1,0 +1,28 @@
+# On PRs into main that touch the extension: fail unless ext.version in
+# print_prep.rb is higher than on main. The updater only offers newer versions,
+# so a change merged without a bump would never reach installed copies.
+name: Version bump check
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['print_prep.rb', 'print_prep/**']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare versions
+        run: |
+          pick() { grep -oP "ext\.version\s*=\s*'\K[^']+"; }
+          base=$(git show "origin/${{ github.base_ref }}:print_prep.rb" | pick)
+          head=$(pick < print_prep.rb)
+          echo "main: $base  this PR: $head"
+          if [ "$base" = "$head" ] || [ "$(printf '%s\n%s\n' "$base" "$head" | sort -V | tail -n1)" != "$head" ]; then
+            echo "::error file=print_prep.rb::Bump ext.version above $base (patch for fixes, minor for features)."
+            exit 1
+          fi

@@ -16,6 +16,7 @@
 require 'sketchup.rb'
 require 'json'
 require_relative 'overlay' if defined?(Sketchup::Overlay)
+require_relative 'updater'
 
 module BrunoTools
   module PrintPrep
@@ -393,6 +394,7 @@ module BrunoTools
 
     unless file_loaded?(__FILE__)
       UI.menu('Extensions').add_item('Print Prep…') { show_dialog }
+      UI.menu('Extensions').add_item('Print Prep: Check for updates') { Updater.check(manual: true) }
       file_loaded(__FILE__)
     end
   end
