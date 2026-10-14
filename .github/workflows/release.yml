@@ -1,0 +1,37 @@
+# On every push to main: build print_prep.rbz and attach it to the GitHub
+# Release for the current version (taken from ext.version in print_prep.rb).
+# Same version -> the file on that release is replaced; new version -> new release.
+name: Build & release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build .rbz
+        run: zip -r -X print_prep.rbz print_prep.rb print_prep/
+
+      - name: Read version
+        id: v
+        run: echo "tag=v$(grep -oP "ext\.version\s*=\s*'\K[^']+" print_prep.rb)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" print_prep.rbz --clobber
+          else
+            gh release create "$TAG" print_prep.rbz --title "Print Prep $TAG" \
+              --notes "Download **print_prep.rbz** below, then in SketchUp: Extensions > Extension Manager > Install Extension."
+          fi

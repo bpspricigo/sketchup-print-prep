@@ -7,9 +7,12 @@ Checks a house model before 3D printing:
 - **Thin walls.** Shoots rays through each part to find its thinnest wall, then flags parts that end up below the minimum wall thickness at the chosen scale.
 - **Show / Show spot.** Zooms to a problem part, or opens it and selects the exact face where the thinnest wall is.
 
-## Install
-SketchUp Pro → **Extensions → Extension Manager → Install Extension…** → pick `print_prep.rbz`.
-Then open it from **Extensions → Print Prep…**
+## Install (Windows)
+1. Go to the repo's **Releases** page and download `print_prep.rbz` from the newest release.
+2. In SketchUp: **Extensions > Extension Manager > Install Extension...** and pick the file.
+3. Open it from **Extensions > Print Prep...**
+
+To update, do the same with the newer `.rbz`. SketchUp replaces the old version.
 
 ## Use
 1. Pick the printer (or type the bed size), the scale, and the minimum wall.
@@ -25,8 +28,10 @@ Then open it from **Extensions → Print Prep…**
 - Hidden parts and parts on hidden tags are skipped.
 - Use Solid Inspector² to actually fix non-solid parts.
 
-## Build the .rbz
-From the repo root:
-```
-zip -r -X print_prep.rbz print_prep.rb print_prep/
-```
+## For development (Windows)
+Download the repo (**Code > Download ZIP**, or `git clone`), then double-click:
+
+- **`install-dev.bat`** copies the extension straight into SketchUp's Plugins folder. Restart SketchUp to load it. This is the fastest way to try a change.
+- **`build.bat`** creates `print_prep.rbz` in the same folder, if you want a file to share.
+
+You don't normally need `build.bat`: every push to `main` builds the `.rbz` on GitHub and attaches it to a Release (see `.github/workflows/release.yml`). Bump `ext.version` in `print_prep.rb` to start a new release; otherwise the current release's file is replaced.
